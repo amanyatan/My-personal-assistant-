@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>My GPT Assistant</title>
+    <link rel="stylesheet" href="index.css">
+</head>
+<body>
+    <div id="app">
+        <aside class="sidebar">
+            <button class="new-chat-btn" onclick="resetChat()">
+                <span>+</span> New Chat
+            </button>
+            <div class="sidebar-info">
+                <p style="font-size: 0.8rem; color: #8b949e; margin-top: 1rem;">
+                    Powered by Groq ⚡
+                </p>
+            </div>
+        </aside>
+
+        <main class="main-chat">
+            <header class="chat-header">
+                <div class="model-info">Aman yatan assistant</div>
+            </header>
+
+            <div id="messages">
+                <div class="message ai-message">
+                    <div class="msg-content">
+                        <h3>Welcome! 👋</h3>
+                        <p>I'm your AI assistant powered by <strong>Groq</strong>. Ask me anything!</p>
+                    </div>
+                </div>
+            </div>
+
+            <div class="input-container">
+                <div class="input-wrapper">
+                    <input type="text" id="user-input" placeholder="Type a message..." onkeydown="if(event.key === 'Enter') sendMessage()">
+                    <button id="send-btn" onclick="sendMessage()">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 2L11 13"/><path d="M22 2L15 22L11 13L2 9L22 2Z"/></svg>
+                    </button>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <script>
+        let chatHistory = [
+            {
+                role: "system",
+                content: "You are a helpful AI assistant. IMPORTANT: Always format your responses clearly using markdown. Use ## for section headings (each on its own line). Use **bold** for key terms. Use bullet points (- item) for lists, each on a new line. Use numbered lists (1. item) when order matters. Use ```language for code blocks. Always put blank lines between sections and paragraphs. Never write everything in one big paragraph. Break your answer into multiple short paragraphs and sections."
+            }
+        ];
+
+        function parseMarkdown(text) {
+            if (!text) return '';
+            
+            // Normalize line endings
+            let md = text.replace(/\r\n/g, '\n');
+            
+            // If there are no newlines at all, try to add them before ** patterns that look like headings
+            if (!md.includes('\n')) {
+                md = md.replace(/\.\s+\*\*/g, '.\n\n**');
+                md = md.replace(/:\s+\*\*/g, ':\n\n**');
+            }
+
+            // Process code blocks first (protect them)
+            const codeBlocks = [];
+            md = md.replace(/```(\w*)\n?([\s\S]*?)```/g, (match, lang, code) => {
+                const idx = codeBlocks.length;
+                codeBlocks.push(`<pre><code>${escapeHtml(code.trim())}</code></pre>`);
+                return `%%CODEBLOCK_${idx}%%`;
+            });
+
+            // Inline code
+            md = md.replace(/`([^`]+)`/g, '<code class="inline">$1</code>');
+
+            // Split into lines for processing
+            let lines = md.split('\n');
+            let html = '';
+            let inList = false;
+            let listType = '';
+
+            for (let i = 0; i < lines.length; i++) {
+                let line = lines[i].trim();
+
+                // Empty line = paragraph break
+                if (line === '') {
+                    if (inList) {
+                        html += listType === 'ul' ? '</ul>' : '</ol>';
+                        inList = false;
+                    }
+                    continue;
+                }
+
+                // Code block placeholder
+                if (line.match(/%%CODEBLOCK_\d+%%/)) {
+                    if (inList) { html += listType === 'ul' ? '</ul>' : '</ol>'; inList = false; }
+                    const idx = parseInt(line.match(/%%CODEBLOCK_(\d+)%%/)[1]);
+                    html += codeBlocks[idx];
+                    continue;
+                }
+
+                // Headers
+                if (line.startsWith('### ')) {
+                    if (inList) { html += listType === 'ul' ? '</ul>' : '</ol>'; inList = false; }
+                    html += `<h4>${formatInline(line.slice(4))}</h4>`;
+                    continue;
+                }
+                if (line.startsWith('## ')) {
+                    if (inList) { html += listType === 'ul' ? '</ul>' : '</ol>'; inList = false; }
+                    html += `<h3>${formatInline(line.slice(3))}</h3>`;
+                    continue;
+                }
+                if (line.startsWith('# ')) {
+                    if (inList) { html += listType === 'ul' ? '</ul>' : '</ol>'; inList = false; }
+                    html += `<h2>${formatInline(line.slice(2))}</h2>`;
+                    continue;
+                }
+
+                // Horizontal rule
+                if (line === '---' || line === '***') {
+                    if (inList) { html += listType === 'ul' ? '</ul>' : '</ol>'; inList = false; }
+                    html += '<hr>';
+                    continue;
+                }
+
+                // Unordered list
+                if (line.match(/^[\-\*]\s/)) {
+                    if (!inList || listType !== 'ul') {
+                        if (inList) html += listType === 'ul' ? '</ul>' : '</ol>';
+                        html += '<ul>';
+                        inList = true;
+                        listType = 'ul';
+                    }
+                    html += `<li>${formatInline(line.slice(2))}</li>`;
+                    continue;
+                }
+
+                // Ordered list
+                if (line.match(/^\d+\.\s/)) {
+                    if (!inList || listType !== 'ol') {
+                        if (inList) html += listType === 'ul' ? '</ul>' : '</ol>';
+                        html += '<ol>';
+                        inList = true;
+                        listType = 'ol';
+                    }
+                    html += `<li>${formatInline(line.replace(/^\d+\.\s/, ''))}</li>`;
+                    continue;
+                }
+
+                // Regular paragraph
+                if (inList) { html += listType === 'ul' ? '</ul>' : '</ol>'; inList = false; }
+                
+                // Check if this is a bold-started line (like **Topic:** description) — make it a labeled paragraph
+                if (line.match(/^\*\*[^*]+\*\*/)) {
+                    html += `<p>${formatInline(line)}</p>`;
+                } else {
+                    html += `<p>${formatInline(line)}</p>`;
+                }
+            }
+
+            if (inList) {
+                html += listType === 'ul' ? '</ul>' : '</ol>';
+            }
+
+            return html;
+        }
+
+        function formatInline(text) {
+            // Bold + Italic
+            text = text.replace(/\*\*\*(.+?)\*\*\*/g, '<strong><em>$1</em></strong>');
+            // Bold
+            text = text.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+            // Italic
+            text = text.replace(/\*(.+?)\*/g, '<em>$1</em>');
+            return text;
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        async function sendMessage() {
+            const input = document.getElementById("user-input");
+            const btn = document.getElementById("send-btn");
+            const messageText = input.value.trim();
+            
+            if (!messageText) return;
+
+            input.value = "";
+            input.disabled = true;
+            btn.disabled = true;
+
+            addMessageToUI('user', messageText, false);
+            chatHistory.push({ role: "user", content: messageText });
+
+            const typingDiv = showTypingIndicator();
+
+            try {
+                const response = await fetch("http://localhost:3000/api/chat", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ messages: chatHistory })
+                });
+
+                typingDiv.remove();
+
+                if (!response.ok) {
+                    const errorData = await response.json();
+                    throw new Error(errorData.details || "Failed to get AI response");
+                }
+
+                const data = await response.json();
+                addMessageToUI('ai', data.content, true);
+                chatHistory.push(data);
+
+            } catch (error) {
+                typingDiv.remove();
+                addMessageToUI('ai', "Error: " + error.message, false);
+            } finally {
+                input.disabled = false;
+                btn.disabled = false;
+                input.focus();
+            }
+        }
+
+        function addMessageToUI(sender, text, useMarkdown) {
+            const container = document.getElementById("messages");
+            const div = document.createElement("div");
+            div.className = `message ${sender}-message`;
+            
+            const content = document.createElement("div");
+            content.className = "msg-content";
+
+            if (useMarkdown) {
+                content.innerHTML = parseMarkdown(text);
+            } else {
+                content.textContent = text;
+            }
+
+            div.appendChild(content);
+            container.appendChild(div);
+            container.scrollTop = container.scrollHeight;
+        }
+
+        function showTypingIndicator() {
+            const container = document.getElementById("messages");
+            const div = document.createElement("div");
+            div.className = "message ai-message typing-indicator";
+            div.innerHTML = '<div class="msg-content"><div class="dots"><span></span><span></span><span></span></div></div>';
+            container.appendChild(div);
+            container.scrollTop = container.scrollHeight;
+            return div;
+        }
+
+        function resetChat() {
+            chatHistory = [
+                {
+                    role: "system",
+                    content: "You are a helpful AI assistant. IMPORTANT: Always format your responses clearly using markdown. Use ## for section headings (each on its own line). Use **bold** for key terms. Use bullet points (- item) for lists, each on a new line. Use numbered lists (1. item) when order matters. Use ```language for code blocks. Always put blank lines between sections and paragraphs. Never write everything in one big paragraph. Break your answer into multiple short paragraphs and sections."
+                }
+            ];
+            document.getElementById("messages").innerHTML = `
+                <div class="message ai-message">
+                    <div class="msg-content">
+                        <h3>Welcome! 👋</h3>
+                        <p>I'm your AI assistant powered by <strong>Groq</strong>. Ask me anything!</p>
+                    </div>
+                </div>
+            `;
+        }
+    </script>
+</body>
+</html>
