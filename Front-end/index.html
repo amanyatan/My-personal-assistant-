@@ -5,174 +5,320 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>My GPT Assistant</title>
     <link rel="stylesheet" href="index.css">
+    <script>
+        (function() {
+            const saved = localStorage.getItem('theme');
+            if (saved === 'light') document.documentElement.setAttribute('data-theme', 'light');
+        })();
+    </script>
 </head>
 <body>
     <div id="app">
         <aside class="sidebar">
-            <button class="new-chat-btn" onclick="resetChat()">
+            <button class="new-chat-btn" onclick="createNewChat()">
                 <span>+</span> New Chat
             </button>
-            <div class="sidebar-info">
-                <p style="font-size: 0.8rem; color: #8b949e; margin-top: 1rem;">
-                    Powered by Groq ⚡
-                </p>
-            </div>
+            <div class="chat-list" id="chat-list"></div>
         </aside>
 
         <main class="main-chat">
             <header class="chat-header">
-                <div class="model-info">Aman yatan assistant</div>
+                <div class="model-info" id="chat-title">New Chat</div>
+                <button class="theme-toggle" id="theme-toggle-btn" onclick="toggleTheme()" aria-label="Toggle theme" title="Toggle theme">
+                    <div class="toggle-thumb" id="toggle-thumb">🌙</div>
+                </button>
             </header>
 
             <div id="messages">
                 <div class="message ai-message">
                     <div class="msg-content">
                         <h3>Welcome! 👋</h3>
-                        <p>I'm your AI assistant powered by <strong>Groq</strong>. Ask me anything!</p>
+                        <p>I'm your AI assistant. Ask me anything — type, speak, or attach a file or image!</p>
                     </div>
                 </div>
             </div>
 
+            <!-- Attachment Preview Strip -->
+            <div id="attachment-preview" class="attachment-preview hidden"></div>
+
+            <!-- Hidden file inputs -->
+            <input type="file" id="file-input" accept=".txt,.md,.csv,.json,.js,.ts,.py,.html,.css,.xml,.log" style="display:none" onchange="handleFileSelect(event)">
+            <input type="file" id="image-input" accept="image/*" style="display:none" onchange="handleImageSelect(event)">
+
             <div class="input-container">
+                <div class="input-toolbar">
+                    <!-- Attach File -->
+                    <button class="toolbar-btn" id="file-btn" onclick="document.getElementById('file-input').click()" title="Attach a text file">
+                        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/>
+                        </svg>
+                    </button>
+                    <!-- Attach Image -->
+                    <button class="toolbar-btn" id="image-btn" onclick="document.getElementById('image-input').click()" title="Attach an image">
+                        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
+                            <circle cx="8.5" cy="8.5" r="1.5"/>
+                            <polyline points="21 15 16 10 5 21"/>
+                        </svg>
+                    </button>
+                    <!-- Voice -->
+                    <button class="toolbar-btn mic-btn" id="mic-btn" onclick="toggleVoice()" title="Voice input">
+                        <svg id="mic-icon" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
+                            <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+                            <line x1="12" y1="19" x2="12" y2="23"/>
+                            <line x1="8" y1="23" x2="16" y2="23"/>
+                        </svg>
+                        <span class="mic-pulse" id="mic-pulse"></span>
+                    </button>
+                </div>
                 <div class="input-wrapper">
                     <input type="text" id="user-input" placeholder="Type a message..." onkeydown="if(event.key === 'Enter') sendMessage()">
                     <button id="send-btn" onclick="sendMessage()">
                         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 2L11 13"/><path d="M22 2L15 22L11 13L2 9L22 2Z"/></svg>
                     </button>
                 </div>
+                <div id="voice-status" class="voice-status hidden">🎙️ Listening... <span id="voice-interim"></span></div>
             </div>
         </main>
     </div>
 
     <script>
-        let chatHistory = [
-            {
-                role: "system",
-                content: "You are a helpful AI assistant. IMPORTANT: Always format your responses clearly using markdown. Use ## for section headings (each on its own line). Use **bold** for key terms. Use bullet points (- item) for lists, each on a new line. Use numbered lists (1. item) when order matters. Use ```language for code blocks. Always put blank lines between sections and paragraphs. Never write everything in one big paragraph. Break your answer into multiple short paragraphs and sections."
-            }
-        ];
+        const SYSTEM_PROMPT = {
+            role: "system",
+            content: "You are a helpful AI assistant. IMPORTANT: Always format your responses clearly using markdown. Use ## for section headings (each on its own line). Use **bold** for key terms. Use bullet points (- item) for lists, each on a new line. Use numbered lists (1. item) when order matters. Use ```language for code blocks. Always put blank lines between sections and paragraphs. Never write everything in one big paragraph. Break your answer into multiple short paragraphs and sections."
+        };
 
+        // ─── Pending Attachments ──────────────────────────────────────────────
+        let pendingAttachments = []; // { type: 'file'|'image', name, content, dataUrl? }
+
+        // ─── Session Management ───────────────────────────────────────────────
+        let sessions = [];
+        let activeSessionId = null;
+
+        function generateId() {
+            return Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+        }
+
+        function createSession(name) {
+            const session = { id: generateId(), name, history: [{ ...SYSTEM_PROMPT }], _dom: null };
+            sessions.push(session);
+            return session;
+        }
+
+        function switchToSession(id) {
+            if (activeSessionId) {
+                const cur = sessions.find(s => s.id === activeSessionId);
+                if (cur) cur._dom = document.getElementById('messages').innerHTML;
+            }
+            activeSessionId = id;
+            const session = sessions.find(s => s.id === id);
+            if (!session) return;
+            document.getElementById('chat-title').textContent = session.name;
+            const msgContainer = document.getElementById('messages');
+            msgContainer.innerHTML = session._dom || `
+                <div class="message ai-message">
+                    <div class="msg-content">
+                        <h3>Welcome! 👋</h3>
+                        <p>I'm your AI assistant. Ask me anything — type, speak, or attach a file or image!</p>
+                    </div>
+                </div>`;
+            msgContainer.scrollTop = msgContainer.scrollHeight;
+            document.querySelectorAll('.chat-tab').forEach(t => t.classList.toggle('active', t.dataset.id === id));
+            document.getElementById('user-input').focus();
+        }
+
+        function createNewChat() {
+            const session = createSession('Chat ' + (sessions.length + 1));
+            renderChatList();
+            switchToSession(session.id);
+        }
+
+        function renderChatList() {
+            const list = document.getElementById('chat-list');
+            list.innerHTML = '';
+            [...sessions].reverse().forEach(session => {
+                const tab = document.createElement('div');
+                tab.className = 'chat-tab' + (session.id === activeSessionId ? ' active' : '');
+                tab.dataset.id = session.id;
+                tab.innerHTML = `
+                    <span class="chat-tab-icon">💬</span>
+                    <span class="chat-tab-name">${escapeHtml(session.name)}</span>
+                    <button class="chat-tab-delete" onclick="deleteSession('${session.id}', event)" title="Delete">✕</button>`;
+                tab.addEventListener('click', () => switchToSession(session.id));
+                list.appendChild(tab);
+            });
+        }
+
+        function deleteSession(id, event) {
+            event.stopPropagation();
+            sessions = sessions.filter(s => s.id !== id);
+            if (activeSessionId === id) {
+                sessions.length > 0 ? switchToSession(sessions[sessions.length - 1].id) : createNewChat();
+                return;
+            }
+            renderChatList();
+        }
+
+        // ─── File Attachment ──────────────────────────────────────────────────
+        function handleFileSelect(e) {
+            const file = e.target.files[0];
+            if (!file) return;
+            e.target.value = '';
+            const reader = new FileReader();
+            reader.onload = evt => {
+                pendingAttachments.push({ type: 'file', name: file.name, content: evt.target.result });
+                renderAttachmentPreview();
+            };
+            reader.readAsText(file);
+        }
+
+        function handleImageSelect(e) {
+            const file = e.target.files[0];
+            if (!file) return;
+            e.target.value = '';
+            const reader = new FileReader();
+            reader.onload = evt => {
+                pendingAttachments.push({ type: 'image', name: file.name, dataUrl: evt.target.result, content: null });
+                renderAttachmentPreview();
+            };
+            reader.readAsDataURL(file);
+        }
+
+        function renderAttachmentPreview() {
+            const strip = document.getElementById('attachment-preview');
+            if (pendingAttachments.length === 0) { strip.classList.add('hidden'); strip.innerHTML = ''; return; }
+            strip.classList.remove('hidden');
+            strip.innerHTML = pendingAttachments.map((att, i) => {
+                if (att.type === 'image') {
+                    return `<div class="att-chip att-chip-img" data-idx="${i}">
+                        <img src="${att.dataUrl}" class="att-thumb" alt="${escapeHtml(att.name)}">
+                        <span class="att-name">${escapeHtml(att.name)}</span>
+                        <button class="att-remove" onclick="removeAttachment(${i})">✕</button>
+                    </div>`;
+                } else {
+                    return `<div class="att-chip att-chip-file" data-idx="${i}">
+                        <span class="att-file-icon">📄</span>
+                        <span class="att-name">${escapeHtml(att.name)}</span>
+                        <button class="att-remove" onclick="removeAttachment(${i})">✕</button>
+                    </div>`;
+                }
+            }).join('');
+        }
+
+        function removeAttachment(idx) {
+            pendingAttachments.splice(idx, 1);
+            renderAttachmentPreview();
+        }
+
+        // ─── Voice Input ──────────────────────────────────────────────────────
+        let recognition = null;
+        let isListening = false;
+
+        function toggleVoice() {
+            const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+            if (!SpeechRecognition) {
+                showToast('⚠️ Voice input is not supported in this browser. Try Chrome.');
+                return;
+            }
+            if (isListening) {
+                recognition.stop();
+                return;
+            }
+            recognition = new SpeechRecognition();
+            recognition.continuous = false;
+            recognition.interimResults = true;
+            recognition.lang = 'en-US';
+
+            const micBtn = document.getElementById('mic-btn');
+            const voiceStatus = document.getElementById('voice-status');
+            const voiceInterim = document.getElementById('voice-interim');
+            const input = document.getElementById('user-input');
+
+            recognition.onstart = () => {
+                isListening = true;
+                micBtn.classList.add('mic-active');
+                voiceStatus.classList.remove('hidden');
+            };
+
+            recognition.onresult = (event) => {
+                let interim = '';
+                let final = '';
+                for (let i = event.resultIndex; i < event.results.length; i++) {
+                    if (event.results[i].isFinal) final += event.results[i][0].transcript;
+                    else interim += event.results[i][0].transcript;
+                }
+                voiceInterim.textContent = interim;
+                if (final) input.value = (input.value + ' ' + final).trim();
+            };
+
+            recognition.onend = () => {
+                isListening = false;
+                micBtn.classList.remove('mic-active');
+                voiceStatus.classList.add('hidden');
+                voiceInterim.textContent = '';
+            };
+
+            recognition.onerror = (e) => {
+                isListening = false;
+                micBtn.classList.remove('mic-active');
+                voiceStatus.classList.add('hidden');
+                if (e.error !== 'no-speech') showToast('🎙️ Mic error: ' + e.error);
+            };
+
+            recognition.start();
+        }
+
+        // ─── Toast Notification ───────────────────────────────────────────────
+        function showToast(msg) {
+            let toast = document.getElementById('toast');
+            if (!toast) {
+                toast = document.createElement('div');
+                toast.id = 'toast';
+                document.body.appendChild(toast);
+            }
+            toast.textContent = msg;
+            toast.className = 'toast-visible';
+            clearTimeout(toast._t);
+            toast._t = setTimeout(() => toast.className = '', 3000);
+        }
+
+        // ─── Markdown Parser ──────────────────────────────────────────────────
         function parseMarkdown(text) {
             if (!text) return '';
-            
-            // Normalize line endings
             let md = text.replace(/\r\n/g, '\n');
-            
-            // If there are no newlines at all, try to add them before ** patterns that look like headings
             if (!md.includes('\n')) {
                 md = md.replace(/\.\s+\*\*/g, '.\n\n**');
                 md = md.replace(/:\s+\*\*/g, ':\n\n**');
             }
-
-            // Process code blocks first (protect them)
             const codeBlocks = [];
             md = md.replace(/```(\w*)\n?([\s\S]*?)```/g, (match, lang, code) => {
                 const idx = codeBlocks.length;
                 codeBlocks.push(`<pre><code>${escapeHtml(code.trim())}</code></pre>`);
                 return `%%CODEBLOCK_${idx}%%`;
             });
-
-            // Inline code
             md = md.replace(/`([^`]+)`/g, '<code class="inline">$1</code>');
-
-            // Split into lines for processing
-            let lines = md.split('\n');
-            let html = '';
-            let inList = false;
-            let listType = '';
-
+            let lines = md.split('\n'), html = '', inList = false, listType = '';
             for (let i = 0; i < lines.length; i++) {
                 let line = lines[i].trim();
-
-                // Empty line = paragraph break
-                if (line === '') {
-                    if (inList) {
-                        html += listType === 'ul' ? '</ul>' : '</ol>';
-                        inList = false;
-                    }
-                    continue;
-                }
-
-                // Code block placeholder
-                if (line.match(/%%CODEBLOCK_\d+%%/)) {
-                    if (inList) { html += listType === 'ul' ? '</ul>' : '</ol>'; inList = false; }
-                    const idx = parseInt(line.match(/%%CODEBLOCK_(\d+)%%/)[1]);
-                    html += codeBlocks[idx];
-                    continue;
-                }
-
-                // Headers
-                if (line.startsWith('### ')) {
-                    if (inList) { html += listType === 'ul' ? '</ul>' : '</ol>'; inList = false; }
-                    html += `<h4>${formatInline(line.slice(4))}</h4>`;
-                    continue;
-                }
-                if (line.startsWith('## ')) {
-                    if (inList) { html += listType === 'ul' ? '</ul>' : '</ol>'; inList = false; }
-                    html += `<h3>${formatInline(line.slice(3))}</h3>`;
-                    continue;
-                }
-                if (line.startsWith('# ')) {
-                    if (inList) { html += listType === 'ul' ? '</ul>' : '</ol>'; inList = false; }
-                    html += `<h2>${formatInline(line.slice(2))}</h2>`;
-                    continue;
-                }
-
-                // Horizontal rule
-                if (line === '---' || line === '***') {
-                    if (inList) { html += listType === 'ul' ? '</ul>' : '</ol>'; inList = false; }
-                    html += '<hr>';
-                    continue;
-                }
-
-                // Unordered list
-                if (line.match(/^[\-\*]\s/)) {
-                    if (!inList || listType !== 'ul') {
-                        if (inList) html += listType === 'ul' ? '</ul>' : '</ol>';
-                        html += '<ul>';
-                        inList = true;
-                        listType = 'ul';
-                    }
-                    html += `<li>${formatInline(line.slice(2))}</li>`;
-                    continue;
-                }
-
-                // Ordered list
-                if (line.match(/^\d+\.\s/)) {
-                    if (!inList || listType !== 'ol') {
-                        if (inList) html += listType === 'ul' ? '</ul>' : '</ol>';
-                        html += '<ol>';
-                        inList = true;
-                        listType = 'ol';
-                    }
-                    html += `<li>${formatInline(line.replace(/^\d+\.\s/, ''))}</li>`;
-                    continue;
-                }
-
-                // Regular paragraph
-                if (inList) { html += listType === 'ul' ? '</ul>' : '</ol>'; inList = false; }
-                
-                // Check if this is a bold-started line (like **Topic:** description) — make it a labeled paragraph
-                if (line.match(/^\*\*[^*]+\*\*/)) {
-                    html += `<p>${formatInline(line)}</p>`;
-                } else {
-                    html += `<p>${formatInline(line)}</p>`;
-                }
+                if (line === '') { if (inList) { html += listType === 'ul' ? '</ul>' : '</ol>'; inList = false; } continue; }
+                if (line.match(/%%CODEBLOCK_\d+%%/)) { if (inList) { html += listType === 'ul' ? '</ul>' : '</ol>'; inList = false; } html += codeBlocks[parseInt(line.match(/%%CODEBLOCK_(\d+)%%/)[1])]; continue; }
+                if (line.startsWith('### ')) { if (inList) { html += listType==='ul'?'</ul>':'</ol>'; inList=false; } html += `<h4>${formatInline(line.slice(4))}</h4>`; continue; }
+                if (line.startsWith('## '))  { if (inList) { html += listType==='ul'?'</ul>':'</ol>'; inList=false; } html += `<h3>${formatInline(line.slice(3))}</h3>`; continue; }
+                if (line.startsWith('# '))   { if (inList) { html += listType==='ul'?'</ul>':'</ol>'; inList=false; } html += `<h2>${formatInline(line.slice(2))}</h2>`; continue; }
+                if (line === '---' || line === '***') { if (inList) { html += listType==='ul'?'</ul>':'</ol>'; inList=false; } html += '<hr>'; continue; }
+                if (line.match(/^[\-\*]\s/)) { if (!inList||listType!=='ul') { if (inList) html+=listType==='ul'?'</ul>':'</ol>'; html+='<ul>'; inList=true; listType='ul'; } html+=`<li>${formatInline(line.slice(2))}</li>`; continue; }
+                if (line.match(/^\d+\.\s/))  { if (!inList||listType!=='ol') { if (inList) html+=listType==='ul'?'</ul>':'</ol>'; html+='<ol>'; inList=true; listType='ol'; } html+=`<li>${formatInline(line.replace(/^\d+\.\s/,''))}</li>`; continue; }
+                if (inList) { html += listType==='ul'?'</ul>':'</ol>'; inList=false; }
+                html += `<p>${formatInline(line)}</p>`;
             }
-
-            if (inList) {
-                html += listType === 'ul' ? '</ul>' : '</ol>';
-            }
-
+            if (inList) html += listType === 'ul' ? '</ul>' : '</ol>';
             return html;
         }
 
         function formatInline(text) {
-            // Bold + Italic
             text = text.replace(/\*\*\*(.+?)\*\*\*/g, '<strong><em>$1</em></strong>');
-            // Bold
             text = text.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
-            // Italic
             text = text.replace(/\*(.+?)\*/g, '<em>$1</em>');
             return text;
         }
@@ -183,19 +329,56 @@
             return div.innerHTML;
         }
 
+        // ─── Send Message ─────────────────────────────────────────────────────
         async function sendMessage() {
             const input = document.getElementById("user-input");
             const btn = document.getElementById("send-btn");
-            const messageText = input.value.trim();
-            
-            if (!messageText) return;
+            let messageText = input.value.trim();
 
-            input.value = "";
+            // Must have either text or attachments
+            if (!messageText && pendingAttachments.length === 0) return;
+
+            const session = sessions.find(s => s.id === activeSessionId);
+            if (!session) return;
+
+            // Auto-name session on first message
+            const labelText = messageText || pendingAttachments[0].name;
+            if (session.history.length === 1) {
+                session.name = labelText.length > 30 ? labelText.slice(0, 30) + '…' : labelText;
+                document.getElementById('chat-title').textContent = session.name;
+                renderChatList();
+            }
+
+            input.value = '';
             input.disabled = true;
             btn.disabled = true;
 
-            addMessageToUI('user', messageText, false);
-            chatHistory.push({ role: "user", content: messageText });
+            // ── Build the message for the AI ──────────────────────────────────
+            let aiMessageText = messageText;
+            const localAttachments = [...pendingAttachments];
+            pendingAttachments = [];
+            renderAttachmentPreview();
+
+            // Append file contents as context
+            const fileAtts = localAttachments.filter(a => a.type === 'file');
+            if (fileAtts.length > 0) {
+                const fileContext = fileAtts.map(a =>
+                    `\n\n--- Attached file: ${a.name} ---\n${a.content.slice(0, 8000)}\n--- End of ${a.name} ---`
+                ).join('\n');
+                aiMessageText = (aiMessageText ? aiMessageText + '\n' : '') + fileContext;
+            }
+
+            // Append image context cue
+            const imgAtts = localAttachments.filter(a => a.type === 'image');
+            if (imgAtts.length > 0) {
+                const imgNote = imgAtts.map(a => `[Image attached: ${a.name}]`).join(' ');
+                aiMessageText = (aiMessageText ? aiMessageText + '\n' : '') +
+                    imgNote + '\n(Describe or analyze the image if you can, otherwise acknowledge it.)';
+            }
+
+            // ── Render user bubble ────────────────────────────────────────────
+            addMessageToUI_user(messageText, localAttachments);
+            session.history.push({ role: "user", content: aiMessageText || '(attachment sent)' });
 
             const typingDiv = showTypingIndicator();
 
@@ -203,20 +386,16 @@
                 const response = await fetch("http://localhost:3000/api/chat", {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ messages: chatHistory })
+                    body: JSON.stringify({ messages: session.history })
                 });
-
                 typingDiv.remove();
-
                 if (!response.ok) {
-                    const errorData = await response.json();
-                    throw new Error(errorData.details || "Failed to get AI response");
+                    const err = await response.json();
+                    throw new Error(err.details || "Failed to get AI response");
                 }
-
                 const data = await response.json();
                 addMessageToUI('ai', data.content, true);
-                chatHistory.push(data);
-
+                session.history.push(data);
             } catch (error) {
                 typingDiv.remove();
                 addMessageToUI('ai', "Error: " + error.message, false);
@@ -224,23 +403,49 @@
                 input.disabled = false;
                 btn.disabled = false;
                 input.focus();
+                session._dom = document.getElementById('messages').innerHTML;
             }
+        }
+
+        // Renders a rich user bubble with optional attachment previews
+        function addMessageToUI_user(text, attachments) {
+            const container = document.getElementById("messages");
+            const wrap = document.createElement("div");
+            wrap.className = 'message user-message';
+
+            let html = '';
+
+            // Image thumbnails
+            const imgs = attachments.filter(a => a.type === 'image');
+            if (imgs.length) {
+                html += `<div class="bubble-images">${imgs.map(i =>
+                    `<img src="${i.dataUrl}" class="bubble-img" alt="${escapeHtml(i.name)}">`
+                ).join('')}</div>`;
+            }
+
+            // File chips
+            const files = attachments.filter(a => a.type === 'file');
+            if (files.length) {
+                html += `<div class="bubble-files">${files.map(f =>
+                    `<span class="bubble-file-chip">📄 ${escapeHtml(f.name)}</span>`
+                ).join('')}</div>`;
+            }
+
+            // Message text
+            if (text) html += `<div class="msg-content">${escapeHtml(text)}</div>`;
+
+            wrap.innerHTML = html;
+            container.appendChild(wrap);
+            container.scrollTop = container.scrollHeight;
         }
 
         function addMessageToUI(sender, text, useMarkdown) {
             const container = document.getElementById("messages");
             const div = document.createElement("div");
             div.className = `message ${sender}-message`;
-            
             const content = document.createElement("div");
             content.className = "msg-content";
-
-            if (useMarkdown) {
-                content.innerHTML = parseMarkdown(text);
-            } else {
-                content.textContent = text;
-            }
-
+            content.innerHTML = useMarkdown ? parseMarkdown(text) : escapeHtml(text);
             div.appendChild(content);
             container.appendChild(div);
             container.scrollTop = container.scrollHeight;
@@ -256,22 +461,24 @@
             return div;
         }
 
-        function resetChat() {
-            chatHistory = [
-                {
-                    role: "system",
-                    content: "You are a helpful AI assistant. IMPORTANT: Always format your responses clearly using markdown. Use ## for section headings (each on its own line). Use **bold** for key terms. Use bullet points (- item) for lists, each on a new line. Use numbered lists (1. item) when order matters. Use ```language for code blocks. Always put blank lines between sections and paragraphs. Never write everything in one big paragraph. Break your answer into multiple short paragraphs and sections."
-                }
-            ];
-            document.getElementById("messages").innerHTML = `
-                <div class="message ai-message">
-                    <div class="msg-content">
-                        <h3>Welcome! 👋</h3>
-                        <p>I'm your AI assistant powered by <strong>Groq</strong>. Ask me anything!</p>
-                    </div>
-                </div>
-            `;
+        // ─── Theme Toggle ─────────────────────────────────────────────────────
+        function toggleTheme() {
+            const html = document.documentElement;
+            const isLight = html.getAttribute('data-theme') === 'light';
+            const thumb = document.getElementById('toggle-thumb');
+            if (isLight) { html.removeAttribute('data-theme'); localStorage.setItem('theme', 'dark'); thumb.textContent = '🌙'; }
+            else          { html.setAttribute('data-theme', 'light'); localStorage.setItem('theme', 'light'); thumb.textContent = '☀️'; }
         }
+
+        // ─── Init ─────────────────────────────────────────────────────────────
+        (function init() {
+            const saved = localStorage.getItem('theme');
+            const thumb = document.getElementById('toggle-thumb');
+            if (saved === 'light' && thumb) thumb.textContent = '☀️';
+            const first = createSession('Chat 1');
+            activeSessionId = first.id;
+            renderChatList();
+        })();
     </script>
 </body>
 </html>
