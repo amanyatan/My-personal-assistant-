@@ -39,9 +39,13 @@ app.get("*", (req, res) => {
 });
 
 const PORT = 3000;
-app.listen(PORT, () => {
-    console.log("===========================================");
-    console.log("  Server is running!");
-    console.log("  Open this in Chrome: http://localhost:" + PORT);
-    console.log("===========================================");
-});
+if (process.env.NODE_ENV !== "production") {
+    app.listen(PORT, () => {
+        console.log("===========================================");
+        console.log("  Server is running!");
+        console.log("  Open this in Chrome: http://localhost:" + PORT);
+        console.log("===========================================");
+    });
+}
+
+module.exports = app;
